@@ -1,0 +1,562 @@
+<!-- ============================================================
+  Donation Widget — embeddable HTML
+
+  Paste into any page that allows custom HTML/JS (a website builder's code block,
+  a CMS HTML widget, a static page, etc.).
+
+  Replace the placeholder before pasting:
+    {{SUPABASE_URL}}  e.g. https://xyzxyz.supabase.co
+                      (the widget calls {{SUPABASE_URL}}/functions/v1/create-checkout)
+
+  Optional settings are in the CONFIG section at the top of the <script> below.
+  ============================================================ -->
+
+<div class="dw-wrap" id="dw-root">
+
+  <div class="dw-header">
+    <p class="dw-header-title">Make a Donation</p>
+    <p class="dw-header-subtitle">Every dollar supports our mission</p>
+  </div>
+
+  <div class="dw-body">
+
+  <div class="dw-section">
+    <p class="dw-label">Donation amount</p>
+    <div class="dw-amounts" id="dw-amounts">
+      <button class="dw-amt" data-val="5">$5</button>
+      <button class="dw-amt" data-val="10">$10</button>
+      <button class="dw-amt dw-amt--active" data-val="20">$20</button>
+      <button class="dw-amt" data-val="50">$50</button>
+      <button class="dw-amt" data-val="100">$100</button>
+    </div>
+    <div class="dw-custom-row">
+      <span class="dw-sym" id="dw-sym">$</span>
+      <input
+        class="dw-input"
+        type="number"
+        id="dw-custom"
+        placeholder="Other amount"
+        min="1"
+        step="1"
+        aria-label="Custom donation amount"
+      />
+    </div>
+  </div>
+
+  <div class="dw-section">
+    <p class="dw-label">Frequency</p>
+    <div class="dw-toggle">
+      <button class="dw-tog dw-tog--active" data-rec="false">Give once</button>
+      <button class="dw-tog" data-rec="true">Give regularly</button>
+    </div>
+    <div class="dw-freq-row" id="dw-freq-row" aria-hidden="true">
+      <button class="dw-frq dw-frq--active" data-frq="week">Weekly</button>
+      <button class="dw-frq" data-frq="month">Monthly</button>
+      <button class="dw-frq" data-frq="year">Yearly</button>
+    </div>
+  </div>
+
+  <div class="dw-section">
+    <p class="dw-label">Currency</p>
+    <div class="dw-currencies" id="dw-currencies">
+      <button class="dw-cur dw-cur--active" data-cur="usd" data-sym="$">USD</button>
+      <button class="dw-cur" data-cur="eur" data-sym="€">EUR</button>
+      <button class="dw-cur" data-cur="gbp" data-sym="£">GBP</button>
+      <button class="dw-cur" data-cur="cad" data-sym="$">CAD</button>
+      <button class="dw-cur" data-cur="aud" data-sym="$">AUD</button>
+    </div>
+  </div>
+
+  <div class="dw-section">
+    <label class="dw-label" for="dw-name">
+      Your name on the leaderboard
+      <span class="dw-optional">(optional)</span>
+    </label>
+    <input
+      class="dw-input"
+      type="text"
+      id="dw-name"
+      placeholder="Leave blank to donate anonymously"
+      maxlength="60"
+    />
+  </div>
+
+  <div class="dw-section dw-checkbox-row" id="dw-newsletter-row">
+    <label class="dw-checkbox-label">
+      <input type="checkbox" id="dw-newsletter" />
+      <span>Sign me up for the newsletter</span>
+    </label>
+  </div>
+
+  <button class="dw-submit" id="dw-submit" aria-live="polite">
+    Donate $20
+  </button>
+  <p class="dw-note" id="dw-note">One-time &middot; Processed securely by Stripe</p>
+  <p class="dw-error" id="dw-error" role="alert" aria-live="assertive"></p>
+
+  </div><!-- /.dw-body -->
+</div>
+
+<script>
+(function () {
+  // ── CONFIG ─────────────────────────────────────────────────────────────────
+  var CHECKOUT_URL = "{{SUPABASE_URL}}/functions/v1/create-checkout";
+  // Show the "Sign me up for the newsletter" checkbox? Set to false if you haven't
+  // enabled a newsletter provider (see NEWSLETTER_PROVIDERS in the README).
+  var SHOW_NEWSLETTER_OPT_IN = true;
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  var state = {
+    amount: 20,
+    customAmount: "",
+    currency: "usd",
+    sym: "$",
+    recurring: false,
+    interval: "month",
+    name: "",
+    newsletterOptIn: false,
+    loading: false,
+  };
+
+  // ── Element refs ───────────────────────────────────────────────────────────
+  var elSym        = document.getElementById("dw-sym");
+  var elCustom     = document.getElementById("dw-custom");
+  var elFreqRow    = document.getElementById("dw-freq-row");
+  var elSubmit     = document.getElementById("dw-submit");
+  var elNote       = document.getElementById("dw-note");
+  var elError      = document.getElementById("dw-error");
+  var elName       = document.getElementById("dw-name");
+  var elNewsletter = document.getElementById("dw-newsletter");
+
+  if (!SHOW_NEWSLETTER_OPT_IN) {
+    document.getElementById("dw-newsletter-row").style.display = "none";
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function effectiveAmount() {
+    return state.customAmount ? parseFloat(state.customAmount) : state.amount;
+  }
+
+  function freqLabel() {
+    return { week: "week", month: "month", year: "year" }[state.interval];
+  }
+
+  function updateUI() {
+    var amt = effectiveAmount();
+    var amtStr = amt ? (state.sym + amt) : "—";
+
+    elSubmit.textContent = state.loading ? "Redirecting…" : ("Donate " + amtStr);
+    elSubmit.disabled = state.loading || !amt || amt < 1;
+
+    elNote.innerHTML = state.recurring
+      ? ("Recurring &middot; billed every " + freqLabel() + " &middot; Stripe")
+      : "One-time &middot; Processed securely by Stripe";
+
+    elFreqRow.style.display = state.recurring ? "flex" : "none";
+    elFreqRow.setAttribute("aria-hidden", state.recurring ? "false" : "true");
+
+    elSym.textContent = state.sym;
+    elError.textContent = "";
+
+    // Update preset amount button labels to reflect the current currency symbol
+    document.querySelectorAll(".dw-amt").forEach(function (b) {
+      b.textContent = state.sym + b.dataset.val;
+    });
+  }
+
+  function activate(group, selector, activeClass) {
+    var els = document.querySelectorAll(group);
+    for (var i = 0; i < els.length; i++) {
+      var isTarget = els[i].matches(selector);
+      els[i].classList.toggle(activeClass, isTarget);
+    }
+  }
+
+  // ── Amount buttons ─────────────────────────────────────────────────────────
+  document.getElementById("dw-amounts").addEventListener("click", function (e) {
+    var btn = e.target.closest(".dw-amt");
+    if (!btn) return;
+    state.amount = parseInt(btn.dataset.val, 10);
+    state.customAmount = "";
+    elCustom.value = "";
+    activate(".dw-amt", '[data-val="' + btn.dataset.val + '"]', "dw-amt--active");
+    updateUI();
+  });
+
+  elCustom.addEventListener("input", function () {
+    state.customAmount = elCustom.value;
+    activate(".dw-amt", "___none___", "dw-amt--active"); // deselect all
+    updateUI();
+  });
+
+  // ── Frequency toggle ───────────────────────────────────────────────────────
+  document.querySelectorAll(".dw-tog").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      state.recurring = btn.dataset.rec === "true";
+      activate(".dw-tog", '[data-rec="' + btn.dataset.rec + '"]', "dw-tog--active");
+      updateUI();
+    });
+  });
+
+  document.querySelectorAll(".dw-frq").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      state.interval = btn.dataset.frq;
+      activate(".dw-frq", '[data-frq="' + btn.dataset.frq + '"]', "dw-frq--active");
+      updateUI();
+    });
+  });
+
+  // ── Currency ───────────────────────────────────────────────────────────────
+  document.getElementById("dw-currencies").addEventListener("click", function (e) {
+    var btn = e.target.closest(".dw-cur");
+    if (!btn) return;
+    state.currency = btn.dataset.cur;
+    state.sym = btn.dataset.sym;
+    activate(".dw-cur", '[data-cur="' + btn.dataset.cur + '"]', "dw-cur--active");
+    updateUI();
+  });
+
+  // ── Name field ─────────────────────────────────────────────────────────────
+  elName.addEventListener("input", function () {
+    state.name = elName.value;
+  });
+
+  // ── Newsletter opt-in ──────────────────────────────────────────────────────
+  elNewsletter.addEventListener("change", function () {
+    state.newsletterOptIn = elNewsletter.checked;
+  });
+
+  // ── Submit ─────────────────────────────────────────────────────────────────
+  elSubmit.addEventListener("click", async function () {
+    var amt = effectiveAmount();
+    if (!amt || amt < 1) {
+      elError.textContent = "Please enter an amount of at least 1.00.";
+      return;
+    }
+
+    state.loading = true;
+    updateUI();
+
+    try {
+      var res = await fetch(CHECKOUT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: amt,
+          currency: state.currency,
+          displayName: state.name.trim() || "",
+          recurring: state.recurring,
+          interval: state.recurring ? state.interval : undefined,
+          newsletterOptIn: SHOW_NEWSLETTER_OPT_IN && state.newsletterOptIn,
+        }),
+      });
+
+      var data = await res.json();
+
+      if (!res.ok || !data.url) {
+        throw new Error(data.error || "Something went wrong. Please try again.");
+      }
+
+      // Redirect to Stripe Checkout
+      window.location.href = data.url;
+
+    } catch (err) {
+      elError.textContent = err.message || "Could not connect. Please try again.";
+      state.loading = false;
+      updateUI();
+    }
+  });
+
+  updateUI();
+})();
+</script>
+
+<style>
+  /* ── Design tokens ── */
+  .dw-wrap {
+    --dw-bg:         #ffffff;
+    --dw-border:     rgba(0,0,0,0.08);
+    --dw-border-mid: rgba(0,0,0,0.15);
+    --dw-accent:     #2563eb;
+    --dw-accent-bg:  rgba(37,99,235,0.07);
+    --dw-green:      #059669;
+    --dw-text:       #111827;
+    --dw-muted:      #6b7280;
+    --dw-subtle:     #f5f5f5;
+
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 420px;
+    margin: 0 auto;
+    background: var(--dw-bg);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+    color: var(--dw-text);
+  }
+
+  /* ── Dark header — matches leaderboard ── */
+  .dw-header {
+    background: #111;
+    padding: 20px 24px 18px;
+  }
+
+  .dw-header-title {
+    margin: 0 0 2px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.2px;
+  }
+
+  .dw-header-subtitle {
+    margin: 0;
+    font-size: 0.72rem;
+    color: rgba(255,255,255,0.5);
+    letter-spacing: 0.02em;
+  }
+
+  /* ── Body ── */
+  .dw-body {
+    padding: 20px 24px 20px;
+  }
+
+  .dw-section {
+    margin-bottom: 18px;
+  }
+
+  .dw-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dw-muted);
+    margin: 0 0 8px;
+    display: block;
+  }
+
+  .dw-optional {
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    color: #bbb;
+    font-size: 11px;
+  }
+
+  /* ── Amount buttons ── */
+  .dw-amounts {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+
+  .dw-amt {
+    background: var(--dw-subtle);
+    border: 1.5px solid transparent;
+    border-radius: 8px;
+    padding: 9px 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    cursor: pointer;
+    transition: border-color .12s, background .12s, color .12s;
+  }
+
+  .dw-amt:hover { border-color: #ccc; background: #eee; }
+
+  .dw-amt--active {
+    border-color: var(--dw-accent) !important;
+    background: var(--dw-accent-bg) !important;
+    color: var(--dw-accent) !important;
+  }
+
+  /* ── Custom amount row ── */
+  .dw-custom-row {
+    display: flex;
+    align-items: center;
+    border: 1.5px solid #e0e0e0;
+    border-radius: 8px;
+    overflow: hidden;
+    transition: border-color .15s;
+  }
+
+  .dw-custom-row:focus-within { border-color: var(--dw-accent); }
+
+  .dw-sym {
+    padding: 0 10px;
+    font-size: 15px;
+    color: var(--dw-muted);
+    background: #fafafa;
+    border-right: 1px solid #e8e8e8;
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+  }
+
+  /* ── Generic input ── */
+  .dw-input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1.5px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 14px;
+    color: var(--dw-text);
+    background: #fff;
+    outline: none;
+    transition: border-color .15s;
+    -moz-appearance: textfield;
+  }
+
+  .dw-input::placeholder { color: #aaa; }
+
+  .dw-input::-webkit-outer-spin-button,
+  .dw-input::-webkit-inner-spin-button { -webkit-appearance: none; }
+
+  .dw-input:focus { border-color: var(--dw-accent); }
+
+  .dw-custom-row .dw-input {
+    border: none;
+    border-radius: 0;
+    padding: 9px 10px;
+    background: transparent;
+  }
+
+  /* ── Toggle (once / recurring) ── */
+  .dw-toggle {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border: 1.5px solid #e0e0e0;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .dw-tog {
+    background: var(--dw-subtle);
+    border: none;
+    padding: 9px 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--dw-muted);
+    cursor: pointer;
+    transition: background .12s, color .12s;
+  }
+
+  .dw-tog + .dw-tog { border-left: 1px solid #e0e0e0; }
+
+  .dw-tog--active {
+    background: #fff;
+    color: var(--dw-accent);
+  }
+
+  /* ── Frequency row ── */
+  .dw-freq-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .dw-frq {
+    flex: 1;
+    background: var(--dw-subtle);
+    border: 1.5px solid transparent;
+    border-radius: 8px;
+    padding: 7px 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--dw-muted);
+    cursor: pointer;
+    transition: border-color .12s, background .12s, color .12s;
+  }
+
+  .dw-frq--active {
+    border-color: var(--dw-accent);
+    background: var(--dw-accent-bg);
+    color: var(--dw-accent);
+  }
+
+  /* ── Currency ── */
+  .dw-currencies {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .dw-cur {
+    background: var(--dw-subtle);
+    border: 1.5px solid transparent;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--dw-muted);
+    cursor: pointer;
+    transition: border-color .12s, background .12s, color .12s;
+    letter-spacing: 0.03em;
+  }
+
+  .dw-cur--active {
+    border-color: var(--dw-accent);
+    background: var(--dw-accent-bg);
+    color: var(--dw-accent);
+  }
+
+  /* ── Newsletter checkbox ── */
+  .dw-checkbox-row {
+    margin-bottom: 14px;
+  }
+
+  .dw-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--dw-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .dw-checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--dw-accent);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  /* ── Submit ── */
+  .dw-submit {
+    width: 100%;
+    padding: 13px;
+    border: none;
+    border-radius: 8px;
+    background: var(--dw-green);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+    margin-top: 4px;
+    letter-spacing: 0.01em;
+  }
+
+  .dw-submit:hover:not(:disabled) { opacity: 0.85; }
+  .dw-submit:active:not(:disabled) { transform: scale(0.99); }
+  .dw-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── Footer notes ── */
+  .dw-note {
+    text-align: center;
+    font-size: 11px;
+    color: #aaa;
+    margin: 8px 0 0;
+  }
+
+  .dw-error {
+    text-align: center;
+    font-size: 12px;
+    color: #dc2626;
+    margin: 6px 0 0;
+    min-height: 16px;
+  }
+</style>

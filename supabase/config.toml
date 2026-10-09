@@ -1,0 +1,14 @@
+# Supabase project config.
+#
+# project_id is only a local label (used by `supabase start`); the remote project is
+# selected with `supabase link --project-ref <ref>`.
+project_id = "donations"
+
+# Both functions are called without a Supabase user JWT — one from a public web page,
+# one by Stripe (which authenticates with its own webhook signature) — so JWT
+# verification must be off. This is applied automatically by `supabase functions deploy`.
+[functions.create-checkout]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false

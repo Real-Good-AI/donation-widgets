@@ -1,0 +1,310 @@
+<!-- ============================================================
+  Donation Leaderboard — embeddable HTML
+
+  Paste into any page that allows custom HTML/JS (a website builder's code block,
+  a CMS HTML widget, a static page, etc.).
+
+  Replace the two placeholders before pasting:
+    {{SUPABASE_URL}}              e.g. https://xyzxyz.supabase.co
+    {{SUPABASE_PUBLISHABLE_KEY}}  your publishable key, sb_publishable_... (safe to expose)
+
+  Behaviour:
+  - Timeframe selector: 30 days / 3 months / 6 months / 1 year / All time
+  - One-time gifts appear as individual entries; recurring gifts are summed
+    per subscription (see leaderboard_rankings() in the README)
+  - Named donors show their name; anonymous donors show a generated name
+  - Non-USD gifts show the original currency, with the USD equivalent beneath
+  - Updates live in real time as donations arrive
+  ============================================================ -->
+
+<div class="lb-wrap">
+  <div class="lb-header">
+    <div class="lb-title-row">
+      <span class="lb-trophy" aria-hidden="true">🏆</span>
+      <div>
+        <h3 class="lb-title">Top Supporters</h3>
+        <p class="lb-subtitle">Cumulative giving · live updates</p>
+      </div>
+      <span class="lb-live-dot" title="Live data"></span>
+    </div>
+
+    <div class="lb-timeframes" id="lb-timeframes" role="group" aria-label="Timeframe">
+      <button class="lb-tf" data-days="30">30d</button>
+      <button class="lb-tf" data-days="90">3mo</button>
+      <button class="lb-tf lb-tf--active" data-days="180">6mo</button>
+      <button class="lb-tf" data-days="365">1yr</button>
+      <button class="lb-tf" data-days="0">All</button>
+    </div>
+  </div>
+
+  <ol id="lb-list" aria-live="polite" aria-label="Leaderboard">
+    <li class="lb-state">Loading…</li>
+  </ol>
+</div>
+
+<script type="module">
+  const SUPABASE_URL      = "{{SUPABASE_URL}}";
+  const SUPABASE_ANON_KEY = "{{SUPABASE_PUBLISHABLE_KEY}}";
+  const TOP_N = 10;
+
+  import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const list     = document.getElementById("lb-list");
+  let   activeDays = 180;
+
+  function escapeHTML(str) {
+    return str.replace(/[&<>'"]/g,
+      t => ({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;" }[t]));
+  }
+
+  function formatCurrency(amount, currency) {
+    return Number(amount).toLocaleString("en-US", {
+      style: "currency",
+      currency: currency.toUpperCase(),
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+  }
+
+  function medalLabel(rank) {
+    if (rank === 1) return '<span aria-label="1st place">🥇</span>';
+    if (rank === 2) return '<span aria-label="2nd place">🥈</span>';
+    if (rank === 3) return '<span aria-label="3rd place">🥉</span>';
+    return `<span class="lb-rank-num" aria-label="rank ${rank}">#${rank}</span>`;
+  }
+
+  async function fetchRankings(days) {
+    const cutoff = days === 0
+      ? null
+      : new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data, error } = await supabase.rpc("leaderboard_rankings", {
+      cutoff_ts: cutoff,
+      row_limit: TOP_N,
+    });
+
+    if (error) throw error;
+    return data; // [{ display_name, total_usd, total_original, original_currency }]
+  }
+
+  function render(rows) {
+    if (!rows || !rows.length) {
+      list.innerHTML = `<li class="lb-state">No donations yet in this period — be the first! 🎉</li>`;
+      return;
+    }
+
+    list.innerHTML = rows.map((row, i) => {
+      const rank     = i + 1;
+      const name     = escapeHTML(row.display_name);
+      const currency = (row.original_currency || "usd").toLowerCase();
+      const isUSD    = currency === "usd";
+      const totalOriginal = row.total_original ?? 0;
+      const totalUSD      = row.total_usd      ?? 0;
+      const primary  = formatCurrency(totalOriginal, currency);
+      const usdNote  = isUSD
+        ? ""
+        : `<span class="lb-usd-note">≈ ${formatCurrency(totalUSD, "usd")}</span>`;
+      return `
+        <li class="lb-item lb-rank-${Math.min(rank, 4)}"
+            style="animation-delay:${i * 55}ms">
+          <span class="lb-medal">${medalLabel(rank)}</span>
+          <span class="lb-name">${name}</span>
+          <span class="lb-amount">${primary}${usdNote}</span>
+        </li>`;
+    }).join("");
+  }
+
+  async function refresh() {
+    try {
+      const rows = await fetchRankings(activeDays);
+      render(rows);
+    } catch (err) {
+      console.error("Leaderboard error:", err);
+      list.innerHTML = `<li class="lb-state lb-error">Could not load leaderboard. Please refresh.</li>`;
+    }
+  }
+
+  document.getElementById("lb-timeframes").addEventListener("click", e => {
+    const btn = e.target.closest(".lb-tf");
+    if (!btn) return;
+    document.querySelectorAll(".lb-tf").forEach(b => b.classList.remove("lb-tf--active"));
+    btn.classList.add("lb-tf--active");
+    activeDays = parseInt(btn.dataset.days, 10);
+    list.innerHTML = `<li class="lb-state">Loading…</li>`;
+    refresh();
+  });
+
+  await refresh();
+
+  supabase
+    .channel("donations-changes")
+    .on("postgres_changes", { event: "*", schema: "public", table: "donations" }, () => {
+      refresh();
+    })
+    .subscribe();
+</script>
+
+<style>
+  .lb-wrap {
+    --lb-accent: #2563eb;
+    --lb-accent-bg: rgba(37,99,235,0.07);
+    --lb-green: #059669;
+    --lb-muted: #6b7280;
+    background: #fff;
+    border-radius: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 480px;
+    margin: 24px auto;
+    overflow: hidden;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+  }
+
+  .lb-header {
+    background: #111;
+    padding: 20px 20px 14px;
+  }
+
+  .lb-title-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .lb-trophy { font-size: 1.8rem; line-height: 1; }
+
+  .lb-title {
+    margin: 0 0 2px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.2px;
+  }
+
+  .lb-subtitle {
+    margin: 0;
+    font-size: 0.72rem;
+    color: rgba(255,255,255,0.5);
+    letter-spacing: 0.02em;
+  }
+
+  .lb-live-dot {
+    margin-left: auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #34d399;
+    flex-shrink: 0;
+    animation: lb-pulse 2.2s ease-in-out infinite;
+  }
+
+  @keyframes lb-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0.5); }
+    50%       { box-shadow: 0 0 0 7px rgba(52,211,153,0); }
+  }
+
+  .lb-timeframes {
+    display: flex;
+    gap: 5px;
+  }
+
+  .lb-tf {
+    flex: 1;
+    background: rgba(255,255,255,0.1);
+    border: 1.5px solid transparent;
+    border-radius: 6px;
+    color: rgba(255,255,255,0.55);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    padding: 5px 0;
+    cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+
+  .lb-tf:hover { background: rgba(255,255,255,0.18); color: rgba(255,255,255,0.85); }
+
+  .lb-tf--active {
+    background: var(--lb-accent) !important;
+    border-color: var(--lb-accent) !important;
+    color: #fff !important;
+  }
+
+  #lb-list {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 6px;
+  }
+
+  .lb-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 20px;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+    opacity: 0;
+    transform: translateY(5px);
+    animation: lb-in 0.3s ease forwards;
+  }
+
+  @keyframes lb-in { to { opacity: 1; transform: none; } }
+
+  .lb-item:last-child { border-bottom: none; }
+
+  .lb-rank-1 { background: rgba(251,191,36,0.06); border-left: 3px solid #f59e0b; padding-left: 17px; }
+  .lb-rank-2 { background: rgba(156,163,175,0.05); border-left: 3px solid #9ca3af; padding-left: 17px; }
+  .lb-rank-3 { background: rgba(180,120,60,0.05); border-left: 3px solid #b45309; padding-left: 17px; }
+
+  .lb-medal {
+    width: 28px;
+    text-align: center;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+  }
+
+  .lb-rank-num {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--lb-muted);
+  }
+
+  .lb-name {
+    flex: 1;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #1f2937;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .lb-rank-1 .lb-name { font-weight: 700; color: #111; }
+
+  .lb-amount {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--lb-green);
+    flex-shrink: 0;
+    text-align: right;
+  }
+
+  /* Subdued USD equivalent shown below non-USD amounts */
+  .lb-usd-note {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--lb-muted);
+    margin-top: 1px;
+  }
+
+  .lb-state {
+    padding: 32px 20px;
+    text-align: center;
+    color: var(--lb-muted);
+    font-size: 0.85rem;
+    font-style: italic;
+  }
+
+  .lb-error { color: #dc2626; }
+</style>

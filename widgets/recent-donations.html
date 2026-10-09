@@ -1,0 +1,289 @@
+<!-- ============================================================
+  Recent Donations — embeddable HTML
+
+  Paste into any page that allows custom HTML/JS (a website builder's code block,
+  a CMS HTML widget, a static page, etc.).
+
+  Replace the two placeholders before pasting:
+    {{SUPABASE_URL}}              e.g. https://xyzxyz.supabase.co
+    {{SUPABASE_PUBLISHABLE_KEY}}  your publishable key, sb_publishable_... (safe to expose)
+
+  Behaviour:
+  - Shows the 10 most recent donation events (each billing cycle of a
+    recurring donation counts as its own event, same as in the database)
+  - Named donors show their name; anonymous donors show their generated name
+  - Updates live in real time as donations arrive
+  - No SQL setup needed beyond what's in the README — this reads directly
+    from the `donations` table, which the anon role can already SELECT from
+    (RLS policy "Public read")
+  ============================================================ -->
+
+<div class="rd-wrap">
+  <div class="rd-header">
+    <div class="rd-title-row">
+      <span class="rd-bolt" aria-hidden="true">⚡</span>
+      <div>
+        <h3 class="rd-title">Recent Donations</h3>
+        <p class="rd-subtitle">Latest gifts · live updates</p>
+      </div>
+      <span class="rd-live-dot" title="Live data"></span>
+    </div>
+  </div>
+
+  <ol id="rd-list" aria-live="polite" aria-label="Recent donations">
+    <li class="rd-state">Loading…</li>
+  </ol>
+</div>
+
+<script type="module">
+  const SUPABASE_URL      = "{{SUPABASE_URL}}";
+  const SUPABASE_ANON_KEY = "{{SUPABASE_PUBLISHABLE_KEY}}";
+  const RECENT_N = 10;
+
+  import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const list     = document.getElementById("rd-list");
+
+  function escapeHTML(str) {
+    return str.replace(/[&<>'"]/g,
+      t => ({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;" }[t]));
+  }
+
+  function formatCurrency(amount, currency) {
+    return Number(amount).toLocaleString("en-US", {
+      style: "currency",
+      currency: currency.toUpperCase(),
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+  }
+
+  function timeAgo(isoString) {
+    const seconds = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
+    if (seconds < 45) return "just now";
+    const mins = Math.floor(seconds / 60);
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.floor(days / 30);
+    if (months < 12) return `${months}mo ago`;
+    return `${Math.floor(months / 12)}y ago`;
+  }
+
+  async function fetchRecent() {
+    const { data, error } = await supabase
+      .from("donations")
+      .select("name, original_amount, original_currency, amount_usd, stripe_subscription_id, created_at")
+      .order("created_at", { ascending: false })
+      .limit(RECENT_N);
+
+    if (error) throw error;
+    return data;
+  }
+
+  function render(rows) {
+    if (!rows || !rows.length) {
+      list.innerHTML = `<li class="rd-state">No donations yet — be the first! 🎉</li>`;
+      return;
+    }
+
+    list.innerHTML = rows.map((row, i) => {
+      const name       = escapeHTML(row.name);
+      const currency   = (row.original_currency || "usd").toLowerCase();
+      const isUSD      = currency === "usd";
+      const isRecurring = !!row.stripe_subscription_id;
+      const primary    = formatCurrency(row.original_amount, currency);
+      const usdNote    = isUSD
+        ? ""
+        : `<span class="rd-usd-note">≈ ${formatCurrency(row.amount_usd, "usd")}</span>`;
+      const recurBadge = isRecurring
+        ? `<span class="rd-recur-badge" title="Recurring donation">↻</span>`
+        : "";
+
+      return `
+        <li class="rd-item" style="animation-delay:${i * 55}ms">
+          <span class="rd-dot" aria-hidden="true"></span>
+          <span class="rd-main">
+            <span class="rd-name">${name}${recurBadge}</span>
+            <span class="rd-time">${timeAgo(row.created_at)}</span>
+          </span>
+          <span class="rd-amount">${primary}${usdNote}</span>
+        </li>`;
+    }).join("");
+  }
+
+  async function refresh() {
+    try {
+      const rows = await fetchRecent();
+      render(rows);
+    } catch (err) {
+      console.error("Recent donations error:", err);
+      list.innerHTML = `<li class="rd-state rd-error">Could not load recent donations. Please refresh.</li>`;
+    }
+  }
+
+  await refresh();
+
+  // Refresh on any insert/update/delete (new gifts, refund adjustments, refund removals)
+  supabase
+    .channel("donations-recent-changes")
+    .on("postgres_changes", { event: "*", schema: "public", table: "donations" }, () => {
+      refresh();
+    })
+    .subscribe();
+
+  // Keep "time ago" labels fresh without waiting for a new donation
+  setInterval(refresh, 60000);
+</script>
+
+<style>
+  .rd-wrap {
+    --rd-accent: #2563eb;
+    --rd-accent-bg: rgba(37,99,235,0.07);
+    --rd-green: #059669;
+    --rd-muted: #6b7280;
+    background: #fff;
+    border-radius: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 480px;
+    margin: 24px auto;
+    overflow: hidden;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+  }
+
+  .rd-header {
+    background: #111;
+    padding: 20px 20px 18px;
+  }
+
+  .rd-title-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .rd-bolt { font-size: 1.6rem; line-height: 1; }
+
+  .rd-title {
+    margin: 0 0 2px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.2px;
+  }
+
+  .rd-subtitle {
+    margin: 0;
+    font-size: 0.72rem;
+    color: rgba(255,255,255,0.5);
+    letter-spacing: 0.02em;
+  }
+
+  .rd-live-dot {
+    margin-left: auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #34d399;
+    flex-shrink: 0;
+    animation: rd-pulse 2.2s ease-in-out infinite;
+  }
+
+  @keyframes rd-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0.5); }
+    50%       { box-shadow: 0 0 0 7px rgba(52,211,153,0); }
+  }
+
+  #rd-list {
+    list-style: none;
+    margin: 0;
+    padding: 6px 0 6px;
+  }
+
+  .rd-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 20px;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+    opacity: 0;
+    transform: translateY(5px);
+    animation: rd-in 0.3s ease forwards;
+  }
+
+  @keyframes rd-in { to { opacity: 1; transform: none; } }
+
+  .rd-item:last-child { border-bottom: none; }
+
+  .rd-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--rd-green);
+    flex-shrink: 0;
+  }
+
+  .rd-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .rd-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #1f2937;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .rd-recur-badge {
+    display: inline-block;
+    margin-left: 5px;
+    font-size: 0.7rem;
+    color: var(--rd-accent);
+    background: var(--rd-accent-bg);
+    border-radius: 50%;
+    width: 15px;
+    height: 15px;
+    line-height: 15px;
+    text-align: center;
+  }
+
+  .rd-time {
+    font-size: 0.72rem;
+    color: var(--rd-muted);
+    margin-top: 1px;
+  }
+
+  .rd-amount {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--rd-green);
+    flex-shrink: 0;
+    text-align: right;
+  }
+
+  .rd-usd-note {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--rd-muted);
+    margin-top: 1px;
+  }
+
+  .rd-state {
+    padding: 32px 20px;
+    text-align: center;
+    color: var(--rd-muted);
+    font-size: 0.85rem;
+    font-style: italic;
+  }
+
+  .rd-error { color: #dc2626; }
+</style>
